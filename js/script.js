@@ -298,7 +298,7 @@ class TrendBot {
     // Navigation tabs
     document.querySelectorAll('.nav-tab').forEach(tab => {
       tab.addEventListener('click', (e) => {
-        this.switchTab(e.target.dataset.tab);
+        this.switchTab(e.target.closest('.nav-tab').dataset.tab);
       });
     });
 
@@ -1557,7 +1557,6 @@ class TrendBot {
               </p>
             </div>
           </div>
-        
         </div>
       </div>
     `;
