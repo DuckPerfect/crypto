@@ -13,6 +13,11 @@ class TrendBot {
     this.chart = null;
     this.currentCoinData = null;
     
+    // Portfolio and alerts data
+    this.portfolio = JSON.parse(localStorage.getItem('trendbot_portfolio') || '[]');
+    this.alerts = JSON.parse(localStorage.getItem('trendbot_alerts') || '[]');
+    this.marketPredictions = [];
+    
     this.init();
   }
 
@@ -23,6 +28,10 @@ class TrendBot {
       
       // Load initial data
       await this.loadInitialData();
+      
+      // Initialize portfolio and alerts
+      this.updatePortfolioDisplay();
+      this.updateAlertsDisplay();
       
       // Setup auto-refresh
       this.setupAutoRefresh();
@@ -316,6 +325,12 @@ class TrendBot {
     // Modal handlers
     this.setupModals();
 
+    // Portfolio handlers
+    this.setupPortfolioHandlers();
+
+    // Alerts handlers
+    this.setupAlertsHandlers();
+
     // Retry button
     const retryBtn = document.getElementById('retryBtn');
     if (retryBtn) {
@@ -323,6 +338,446 @@ class TrendBot {
         this.analyzeTrends();
       });
     }
+  }
+
+  setupPortfolioHandlers() {
+    // Add holding button
+    const addHoldingBtn = document.getElementById('addHoldingBtn');
+    if (addHoldingBtn) {
+      addHoldingBtn.addEventListener('click', () => {
+        this.showAddHoldingModal();
+      });
+    }
+
+    // Export portfolio button
+    const exportBtn = document.getElementById('exportPortfolioBtn');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => {
+        this.exportPortfolio();
+      });
+    }
+  }
+
+  setupAlertsHandlers() {
+    // Add alert button
+    const addAlertBtn = document.getElementById('addAlertBtn');
+    if (addAlertBtn) {
+      addAlertBtn.addEventListener('click', () => {
+        this.showAddAlertModal();
+      });
+    }
+  }
+
+  showAddHoldingModal() {
+    const modalHTML = `
+      <div id="addHoldingModal" class="modal show">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 class="modal-title">Add Portfolio Holding</h3>
+            <button class="modal-close" onclick="this.closest('.modal').remove()">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="controls-grid">
+              <div class="control-group">
+                <label for="holdingCoin">Cryptocurrency</label>
+                <input type="text" id="holdingCoin" class="search-input" placeholder="Search for a cryptocurrency...">
+                <div id="holdingSuggestions" class="search-suggestions"></div>
+              </div>
+              <div class="control-group">
+                <label for="holdingAmount">Amount</label>
+                <input type="number" id="holdingAmount" class="search-input" placeholder="0.00" step="0.00000001">
+              </div>
+              <div class="control-group">
+                <label for="holdingPrice">Purchase Price (USD)</label>
+                <input type="number" id="holdingPrice" class="search-input" placeholder="0.00" step="0.01">
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button class="btn btn-primary" onclick="window.trendBot.addHolding()">
+                <i class="fas fa-plus"></i>
+                <span>Add Holding</span>
+              </button>
+              <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">
+                <i class="fas fa-times"></i>
+                <span>Cancel</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+    // Setup search for holding modal
+    const holdingInput = document.getElementById('holdingCoin');
+    const holdingSuggestions = document.getElementById('holdingSuggestions');
+    
+    if (holdingInput) {
+      holdingInput.addEventListener('input', async (e) => {
+        const query = e.target.value.trim();
+        if (query.length >= 2) {
+          try {
+            const response = await this.apiManager.makeRequest({
+              url: `/api/search?q=${encodeURIComponent(query)}`,
+              cacheKey: `search_${query}`,
+              cacheTTL: 10 * 60 * 1000
+            });
+
+            if (response.success && response.data) {
+              holdingSuggestions.innerHTML = response.data.map(coin => `
+                <div class="suggestion-item" data-coin-id="${coin.id}" data-coin-name="${coin.name}" data-coin-symbol="${coin.symbol}">
+                  <img src="${coin.thumb}" alt="${coin.name}" loading="lazy">
+                  <span>${coin.name} (${coin.symbol})</span>
+                </div>
+              `).join('');
+
+              holdingSuggestions.classList.add('show');
+
+              // Add click handlers
+              holdingSuggestions.querySelectorAll('.suggestion-item').forEach(item => {
+                item.addEventListener('click', () => {
+                  holdingInput.value = item.dataset.coinName;
+                  holdingInput.dataset.coinId = item.dataset.coinId;
+                  holdingInput.dataset.coinSymbol = item.dataset.coinSymbol;
+                  holdingSuggestions.classList.remove('show');
+                });
+              });
+            }
+          } catch (error) {
+            console.error('Search error:', error);
+          }
+        } else {
+          holdingSuggestions.classList.remove('show');
+        }
+      });
+    }
+  }
+
+  async addHolding() {
+    const coinInput = document.getElementById('holdingCoin');
+    const amountInput = document.getElementById('holdingAmount');
+    const priceInput = document.getElementById('holdingPrice');
+
+    if (!coinInput.dataset.coinId || !amountInput.value || !priceInput.value) {
+      this.showNotification('Please fill in all fields', 'error');
+      return;
+    }
+
+    const holding = {
+      id: Date.now().toString(),
+      coinId: coinInput.dataset.coinId,
+      name: coinInput.value,
+      symbol: coinInput.dataset.coinSymbol,
+      amount: parseFloat(amountInput.value),
+      purchasePrice: parseFloat(priceInput.value),
+      dateAdded: new Date().toISOString()
+    };
+
+    this.portfolio.push(holding);
+    this.savePortfolio();
+    this.updatePortfolioDisplay();
+    
+    document.getElementById('addHoldingModal').remove();
+    this.showNotification('Holding added successfully!', 'success');
+  }
+
+  showAddAlertModal() {
+    const modalHTML = `
+      <div id="addAlertModal" class="modal show">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 class="modal-title">Add Price Alert</h3>
+            <button class="modal-close" onclick="this.closest('.modal').remove()">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="controls-grid">
+              <div class="control-group">
+                <label for="alertCoin">Cryptocurrency</label>
+                <input type="text" id="alertCoin" class="search-input" placeholder="Search for a cryptocurrency...">
+                <div id="alertSuggestions" class="search-suggestions"></div>
+              </div>
+              <div class="control-group">
+                <label for="alertType">Alert Type</label>
+                <select id="alertType" class="control-select">
+                  <option value="above">Price Above</option>
+                  <option value="below">Price Below</option>
+                </select>
+              </div>
+              <div class="control-group">
+                <label for="alertPrice">Target Price (USD)</label>
+                <input type="number" id="alertPrice" class="search-input" placeholder="0.00" step="0.01">
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button class="btn btn-primary" onclick="window.trendBot.addAlert()">
+                <i class="fas fa-bell"></i>
+                <span>Add Alert</span>
+              </button>
+              <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">
+                <i class="fas fa-times"></i>
+                <span>Cancel</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+    // Setup search for alert modal
+    const alertInput = document.getElementById('alertCoin');
+    const alertSuggestions = document.getElementById('alertSuggestions');
+    
+    if (alertInput) {
+      alertInput.addEventListener('input', async (e) => {
+        const query = e.target.value.trim();
+        if (query.length >= 2) {
+          try {
+            const response = await this.apiManager.makeRequest({
+              url: `/api/search?q=${encodeURIComponent(query)}`,
+              cacheKey: `search_${query}`,
+              cacheTTL: 10 * 60 * 1000
+            });
+
+            if (response.success && response.data) {
+              alertSuggestions.innerHTML = response.data.map(coin => `
+                <div class="suggestion-item" data-coin-id="${coin.id}" data-coin-name="${coin.name}" data-coin-symbol="${coin.symbol}">
+                  <img src="${coin.thumb}" alt="${coin.name}" loading="lazy">
+                  <span>${coin.name} (${coin.symbol})</span>
+                </div>
+              `).join('');
+
+              alertSuggestions.classList.add('show');
+
+              // Add click handlers
+              alertSuggestions.querySelectorAll('.suggestion-item').forEach(item => {
+                item.addEventListener('click', () => {
+                  alertInput.value = item.dataset.coinName;
+                  alertInput.dataset.coinId = item.dataset.coinId;
+                  alertInput.dataset.coinSymbol = item.dataset.coinSymbol;
+                  alertSuggestions.classList.remove('show');
+                });
+              });
+            }
+          } catch (error) {
+            console.error('Search error:', error);
+          }
+        } else {
+          alertSuggestions.classList.remove('show');
+        }
+      });
+    }
+  }
+
+  addAlert() {
+    const coinInput = document.getElementById('alertCoin');
+    const typeSelect = document.getElementById('alertType');
+    const priceInput = document.getElementById('alertPrice');
+
+    if (!coinInput.dataset.coinId || !priceInput.value) {
+      this.showNotification('Please fill in all fields', 'error');
+      return;
+    }
+
+    const alert = {
+      id: Date.now().toString(),
+      coinId: coinInput.dataset.coinId,
+      name: coinInput.value,
+      symbol: coinInput.dataset.coinSymbol,
+      type: typeSelect.value,
+      targetPrice: parseFloat(priceInput.value),
+      dateAdded: new Date().toISOString(),
+      triggered: false
+    };
+
+    this.alerts.push(alert);
+    this.saveAlerts();
+    this.updateAlertsDisplay();
+    
+    document.getElementById('addAlertModal').remove();
+    this.showNotification('Alert added successfully!', 'success');
+  }
+
+  async updatePortfolioDisplay() {
+    const totalValueEl = document.getElementById('portfolioTotalValue');
+    const totalChangeEl = document.getElementById('portfolioTotalChange');
+    const holdingsCountEl = document.getElementById('portfolioHoldingsCount');
+    const holdingsContainer = document.getElementById('portfolioHoldings');
+
+    if (!holdingsContainer) return;
+
+    // Update counts
+    if (holdingsCountEl) {
+      holdingsCountEl.textContent = this.portfolio.length;
+    }
+
+    if (this.portfolio.length === 0) {
+      holdingsContainer.innerHTML = `
+        <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+          <i class="fas fa-briefcase" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+          <p>No holdings yet. Click "Add Holding" to start tracking your portfolio.</p>
+        </div>
+      `;
+      
+      if (totalValueEl) totalValueEl.textContent = '$0.00';
+      if (totalChangeEl) totalChangeEl.textContent = '+0.00%';
+      return;
+    }
+
+    // Calculate portfolio values
+    let totalValue = 0;
+    let totalCost = 0;
+    const holdingsWithPrices = [];
+
+    for (const holding of this.portfolio) {
+      try {
+        const response = await this.apiManager.makeRequest({
+          url: `/api/coin/${holding.coinId}`,
+          cacheKey: `coin_${holding.coinId}`,
+          cacheTTL: 5 * 60 * 1000
+        });
+
+        if (response.success && response.data) {
+          const currentPrice = response.data.current_price;
+          const currentValue = holding.amount * currentPrice;
+          const cost = holding.amount * holding.purchasePrice;
+          const pnl = ((currentPrice - holding.purchasePrice) / holding.purchasePrice) * 100;
+
+          totalValue += currentValue;
+          totalCost += cost;
+
+          holdingsWithPrices.push({
+            ...holding,
+            currentPrice,
+            currentValue,
+            pnl,
+            image: response.data.image
+          });
+        }
+      } catch (error) {
+        console.error(`Error fetching price for ${holding.coinId}:`, error);
+      }
+    }
+
+    // Update totals
+    const totalPnl = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
+    
+    if (totalValueEl) {
+      totalValueEl.textContent = `$${this.formatCurrency(totalValue)}`;
+    }
+    
+    if (totalChangeEl) {
+      totalChangeEl.textContent = `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}%`;
+      totalChangeEl.className = `stat-value ${totalPnl >= 0 ? 'positive' : 'negative'}`;
+    }
+
+    // Display holdings
+    holdingsContainer.innerHTML = holdingsWithPrices.map(holding => `
+      <div class="holding-item">
+        <div class="holding-info">
+          <img src="${holding.image}" alt="${holding.name}" class="holding-icon" loading="lazy">
+          <div class="holding-details">
+            <h4>${holding.name}</h4>
+            <p>${holding.amount} ${holding.symbol}</p>
+          </div>
+        </div>
+        <div class="holding-value">
+          <div class="current-value">$${this.formatCurrency(holding.currentValue)}</div>
+          <div class="pnl ${holding.pnl >= 0 ? 'positive' : 'negative'}">
+            ${holding.pnl >= 0 ? '+' : ''}${holding.pnl.toFixed(2)}%
+          </div>
+        </div>
+        <button class="alert-btn delete" onclick="window.trendBot.removeHolding('${holding.id}')">
+          <i class="fas fa-trash"></i>
+        </button>
+      </div>
+    `).join('');
+  }
+
+  updateAlertsDisplay() {
+    const alertsContainer = document.getElementById('priceAlerts');
+    if (!alertsContainer) return;
+
+    if (this.alerts.length === 0) {
+      alertsContainer.innerHTML = `
+        <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+          <i class="fas fa-bell" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+          <p>No price alerts set. Click "Add Alert" to get notified when prices hit your targets.</p>
+        </div>
+      `;
+      return;
+    }
+
+    alertsContainer.innerHTML = this.alerts.map(alert => `
+      <div class="alert-item ${alert.triggered ? 'triggered' : ''}">
+        <div class="alert-info">
+          <div class="alert-details">
+            <h4>${alert.name} (${alert.symbol})</h4>
+            <p>${alert.type === 'above' ? 'Above' : 'Below'} $${alert.targetPrice}</p>
+          </div>
+        </div>
+        <div class="alert-actions">
+          <button class="alert-btn delete" onclick="window.trendBot.removeAlert('${alert.id}')">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  removeHolding(holdingId) {
+    this.portfolio = this.portfolio.filter(h => h.id !== holdingId);
+    this.savePortfolio();
+    this.updatePortfolioDisplay();
+    this.showNotification('Holding removed', 'success');
+  }
+
+  removeAlert(alertId) {
+    this.alerts = this.alerts.filter(a => a.id !== alertId);
+    this.saveAlerts();
+    this.updateAlertsDisplay();
+    this.showNotification('Alert removed', 'success');
+  }
+
+  savePortfolio() {
+    localStorage.setItem('trendbot_portfolio', JSON.stringify(this.portfolio));
+  }
+
+  saveAlerts() {
+    localStorage.setItem('trendbot_alerts', JSON.stringify(this.alerts));
+  }
+
+  exportPortfolio() {
+    if (this.portfolio.length === 0) {
+      this.showNotification('No portfolio data to export', 'error');
+      return;
+    }
+
+    const data = {
+      portfolio: this.portfolio,
+      exportDate: new Date().toISOString(),
+      totalHoldings: this.portfolio.length
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `trendbot-portfolio-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    this.showNotification('Portfolio exported successfully!', 'success');
   }
 
   setupSearch() {
@@ -506,6 +961,13 @@ class TrendBot {
     document.getElementById(`${tabName}Tab`).classList.add('active');
 
     this.currentTab = tabName;
+
+    // Load tab-specific data
+    if (tabName === 'portfolio') {
+      this.updatePortfolioDisplay();
+    } else if (tabName === 'alerts') {
+      this.updateAlertsDisplay();
+    }
   }
 
   switchGLTab(type) {
@@ -1095,6 +1557,7 @@ class TrendBot {
               </p>
             </div>
           </div>
+        
         </div>
       </div>
     `;
@@ -1118,25 +1581,130 @@ class TrendBot {
         <div style="text-align: center; padding: 2rem;">
           <div class="loading-spinner"></div>
           <p style="color: var(--text-secondary); margin-top: 1rem;">
-            Analyzing market data and generating predictions...
+            Analyzing top cryptocurrencies and generating market predictions...
           </p>
         </div>
       `;
     }
 
-    // Simulate prediction generation
-    setTimeout(() => {
+    try {
+      // Get top 10 cryptocurrencies for predictions
+      const response = await this.apiManager.makeRequest({
+        url: '/api/trends?timeframe=24h&market=all&limit=10&sort=market_cap',
+        cacheKey: 'top_10_cryptos',
+        cacheTTL: 5 * 60 * 1000
+      });
+
+      if (response.success && response.data) {
+        const predictions = [];
+        
+        // Generate predictions for top coins
+        for (const coin of response.data.slice(0, 5)) {
+          try {
+            const chartResponse = await this.apiManager.makeRequest({
+              url: `/api/chart/${coin.id}?days=30`,
+              cacheKey: `chart_${coin.id}_30`,
+              cacheTTL: 5 * 60 * 1000
+            });
+
+            if (chartResponse.success && chartResponse.data) {
+              const prices = chartResponse.data.prices.map(p => p.price);
+              const timeframe = document.getElementById('predictionTimeframe')?.value || '7d';
+              
+              const prediction = await this.predictionEngine.generatePrediction(coin.id, prices, timeframe);
+              predictions.push({
+                coin,
+                prediction
+              });
+            }
+          } catch (error) {
+            console.error(`Error generating prediction for ${coin.id}:`, error);
+          }
+        }
+
+        this.marketPredictions = predictions;
+        this.displayMarketPredictions(predictions);
+      }
+    } catch (error) {
+      console.error('Error generating market predictions:', error);
       if (container) {
         container.innerHTML = `
-          <div style="text-align: center; padding: 2rem; color: var(--text-secondary);">
-            <i class="fas fa-brain" style="font-size: 3rem; margin-bottom: 1rem; color: var(--accent-primary);"></i>
-            <h3 style="color: var(--text-primary); margin-bottom: 1rem;">Market Predictions Generated</h3>
-            <p>Use the "Predict" button on individual cryptocurrency cards for detailed AI analysis and price predictions.</p>
+          <div style="text-align: center; padding: 2rem; color: var(--text-error);">
+            <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 1rem;"></i>
+            <h3>Failed to Generate Predictions</h3>
+            <p>Please try again later or check individual coin predictions.</p>
           </div>
         `;
       }
-      this.showNotification('Market predictions ready!', 'success');
-    }, 2000);
+      this.showNotification('Failed to generate market predictions', 'error');
+    }
+  }
+
+  displayMarketPredictions(predictions) {
+    const container = document.getElementById('predictionsOverview');
+    if (!container) return;
+
+    if (predictions.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+          <i class="fas fa-brain" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
+          <p>No predictions generated. Try again or use individual coin predictions.</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="market-predictions">
+        <div class="predictions-header">
+          <h3>Market Predictions Summary</h3>
+          <p>AI-generated predictions for top cryptocurrencies</p>
+        </div>
+        <div class="predictions-grid">
+          ${predictions.map(({ coin, prediction }) => `
+            <div class="prediction-card">
+              <div class="prediction-card-header">
+                <img src="${coin.image}" alt="${coin.name}" class="prediction-coin-image">
+                <div class="prediction-coin-info">
+                  <h4>${coin.name}</h4>
+                  <span>${coin.symbol}</span>
+                </div>
+                <div class="prediction-direction ${prediction.direction}">
+                  <i class="fas fa-${prediction.direction === 'bullish' ? 'arrow-up' : 'arrow-down'}"></i>
+                  ${prediction.direction}
+                </div>
+              </div>
+              <div class="prediction-card-body">
+                <div class="prediction-stat">
+                  <span class="stat-label">Current Price</span>
+                  <span class="stat-value">$${this.formatPrice(prediction.currentPrice)}</span>
+                </div>
+                <div class="prediction-stat">
+                  <span class="stat-label">Target Price</span>
+                  <span class="stat-value">$${this.formatPrice(prediction.targets.moderate)}</span>
+                </div>
+                <div class="prediction-stat">
+                  <span class="stat-label">Confidence</span>
+                  <span class="stat-value">${(prediction.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div class="prediction-stat">
+                  <span class="stat-label">Risk Level</span>
+                  <span class="stat-value ${prediction.riskLevel}">${prediction.riskLevel.toUpperCase()}</span>
+                </div>
+              </div>
+              <div class="prediction-card-actions">
+                <button class="btn btn-secondary" onclick="window.trendBot.generateCoinPrediction('${coin.id}')">
+                  <i class="fas fa-eye"></i>
+                  <span>View Details</span>
+                </button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
+    this.showNotification('Market predictions generated successfully!', 'success');
   }
 
   showGraphsOverview() {
@@ -1269,6 +1837,49 @@ class TrendBot {
         }
       }
     }, 60000);
+
+    // Check alerts every minute
+    setInterval(() => {
+      this.checkAlerts();
+    }, 60000);
+  }
+
+  async checkAlerts() {
+    if (this.alerts.length === 0) return;
+
+    for (const alert of this.alerts) {
+      if (alert.triggered) continue;
+
+      try {
+        const response = await this.apiManager.makeRequest({
+          url: `/api/coin/${alert.coinId}`,
+          cacheKey: `coin_${alert.coinId}`,
+          cacheTTL: 1 * 60 * 1000 // 1 minute for alerts
+        });
+
+        if (response.success && response.data) {
+          const currentPrice = response.data.current_price;
+          let triggered = false;
+
+          if (alert.type === 'above' && currentPrice >= alert.targetPrice) {
+            triggered = true;
+          } else if (alert.type === 'below' && currentPrice <= alert.targetPrice) {
+            triggered = true;
+          }
+
+          if (triggered) {
+            alert.triggered = true;
+            this.saveAlerts();
+            this.showNotification(
+              `🚨 Alert: ${alert.name} is ${alert.type} $${alert.targetPrice}! Current price: $${this.formatPrice(currentPrice)}`,
+              'success'
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`Error checking alert for ${alert.coinId}:`, error);
+      }
+    }
   }
 
   setupPerformanceOptimization() {
